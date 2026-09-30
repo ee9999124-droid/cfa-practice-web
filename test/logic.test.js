@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { available, chooseQuestions, gradeSession, sessionGroups, summarize } from '../src/logic.js';
+import { available, chooseQuestions, detachBankSessions, gradeSession, sessionGroups, summarize } from '../src/logic.js';
 
 const q = (id, correctKey = 'A') => ({ id, correctKey });
 const groups = [
@@ -40,4 +40,45 @@ test('session, grading, submit metrics and topic/module statistics count questio
 
 test('legacy vignetteIds sessions remain resolvable', () => {
   assert.equal(sessionGroups({ vignetteIds: ['v1'] }, groups)[0].questions.length, 2);
+});
+
+test('Word import attempts can be included explicitly and unselected answers do not affect coverage', () => {
+  const word = { source: 'word', submittedAt: '2026-01-01', answers: [{ questionId: 's-q1', selected: 'A', correct: true }, { questionId: 'v-q1', selected: '', correct: false }] };
+  const withWord = summarize([word], groups, true).find(topic => topic.name === 'Ethics');
+  const withoutWord = summarize([word], groups, false).find(topic => topic.name === 'Ethics');
+  assert.equal(withWord.practiced, 1);
+  assert.equal(withoutWord.practiced, 0);
+});
+
+test('removing one bank deletes its dedicated records and trims cross-bank sessions', () => {
+  const bankA = { id: 'bank-a', vignettes: [groups[0]] };
+  const remaining = [groups[2]];
+  const sessions = [
+    { id: 'only-a', units: [{ bankId: 'bank-a', groupId: 'v1', questionIds: ['v-q1', 'v-q2'] }], responses: { 'v-q1': { selected: 'A' } } },
+    { id: 'mixed', submittedAt: '2026-01-01', units: [{ bankId: 'bank-a', groupId: 'v1', questionIds: ['v-q1', 'v-q2'] }, { bankId: 'bank-b', groupId: 's2', questionIds: ['s-q2'] }], responses: { 'v-q1': { selected: 'A' }, 's-q2': { selected: 'A' } }, answers: [{ questionId: 'v-q1', selected: 'A', correct: true }, { questionId: 'v-q2', selected: 'B', correct: true }, { questionId: 's-q2', selected: 'A', correct: true }] },
+    { id: 'word_bank-a', source: 'word', bankId: 'bank-a', answers: [{ questionId: 'v-q1', selected: 'A' }] },
+    { id: 'word_bank-b', source: 'word', bankId: 'bank-b', answers: [{ questionId: 's-q2', selected: 'A' }] }
+  ];
+  const changes = detachBankSessions(bankA, remaining, sessions);
+  assert.deepEqual(changes.removeIds.sort(), ['only-a', 'word_bank-a']);
+  const mixed = changes.updates.find(session => session.id === 'mixed');
+  assert.deepEqual(mixed.units.map(unit => unit.bankId), ['bank-b']);
+  assert.deepEqual(mixed.answers.map(answer => answer.questionId), ['s-q2']);
+  assert.deepEqual(Object.keys(mixed.responses), ['s-q2']);
+  assert.equal(changes.removeIds.includes('word_bank-b'), false);
+  const stats = summarize([mixed], remaining);
+  assert.equal(stats[0].practiced, 1);
+});
+
+test('removing then reimporting a bank does not retain or double-count its old attempts', () => {
+  const bank = { id: 'bank-a', vignettes: [groups[0]] };
+  const oldWebsite = { id: 'old-run', submittedAt: '2026-01-01', units: [{ bankId: 'bank-a', groupId: 'v1', questionIds: ['v-q1', 'v-q2'] }], answers: [{ questionId: 'v-q1', selected: 'A', correct: true }] };
+  const oldWord = { id: 'word_bank-a', source: 'word', bankId: 'bank-a', submittedAt: '2026-01-01', answers: [{ questionId: 'v-q1', selected: 'A', correct: true }] };
+  const changes = detachBankSessions(bank, [], [oldWebsite, oldWord]);
+  assert.deepEqual(changes.removeIds.sort(), ['old-run', 'word_bank-a']);
+  const newWord = { ...oldWord, submittedAt: '2026-02-01' };
+  const topic = summarize([newWord], bank.vignettes, true)[0];
+  assert.equal(topic.firstN, 1);
+  assert.equal(topic.latestN, 1);
+  assert.equal(topic.practiced, 1);
 });

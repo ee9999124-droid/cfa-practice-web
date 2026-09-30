@@ -5,12 +5,13 @@ export function available(groups, selected, form = 'all') {
   return form === 'all' ? scoped.filter(group => formOf(group) !== 'unknown') : scoped.filter(group => formOf(group) === form);
 }
 
-const attemptsByQuestion = sessions => {
+const attemptsByQuestion = (sessions, includeWord = true) => {
   const result = new Map();
-  sessions.filter(session => session.submittedAt).flatMap(session => session.answers || []).forEach(answer => {
+  sessions.filter(session => session.submittedAt && (includeWord || session.source !== 'word')).flatMap(session => (session.answers || []).map(answer => ({ ...answer, attemptedAt: session.submittedAt }))).filter(answer => answer.selected).forEach(answer => {
     if (!result.has(answer.questionId)) result.set(answer.questionId, []);
     result.get(answer.questionId).push(answer);
   });
+  result.forEach(items => items.sort((a, b) => String(a.attemptedAt).localeCompare(String(b.attemptedAt))));
   return result;
 };
 
@@ -39,12 +40,50 @@ export function chooseQuestions(pool, mode, target, sessions, random = Math.rand
 
 export function sessionGroups(session, groups) {
   if (session.units) return session.units.map(unit => {
-    const group = groups.find(item => item.id === unit.groupId);
+    const wanted = new Set(unit.questionIds || []);
+    // Old standalone imports could share a group ID; question IDs are the authoritative fallback.
+    const group = groups.find(item => item.id === unit.groupId && (!wanted.size || item.questions.some(question => wanted.has(question.id))))
+      || groups.find(item => item.questions.some(question => wanted.has(question.id)));
     if (!group) return null;
-    const ids = new Set(unit.questionIds || group.questions.map(question => question.id));
+    const ids = wanted.size ? wanted : new Set(group.questions.map(question => question.id));
     return { ...group, questions: group.questions.filter(question => ids.has(question.id)) };
   }).filter(Boolean);
   return (session.vignetteIds || []).map(id => groups.find(group => group.id === id)).filter(Boolean);
+}
+
+/** Build the exact session mutations needed when one bank is removed. */
+export function detachBankSessions(bank, remainingGroups, sessions) {
+  const removedGroups = new Set((bank.vignettes || []).map(group => group.id));
+  const removedQuestions = new Set((bank.vignettes || []).flatMap(group => group.questions.map(question => question.id)));
+  const remainingGroupIds = new Set(remainingGroups.map(group => group.id));
+  const remainingQuestionIds = new Set(remainingGroups.flatMap(group => group.questions.map(question => question.id)));
+  const removeIds = [], updates = [];
+  for (const session of sessions) {
+    if (session.source === 'word' && session.bankId === bank.id) { removeIds.push(session.id); continue; }
+    let next = { ...session };
+    if (session.units) {
+      next.units = session.units.filter(unit => {
+        if (unit.bankId) return unit.bankId !== bank.id;
+        const questionIds = unit.questionIds || [];
+        const onlyInRemovedBank = questionIds.length && questionIds.every(id => removedQuestions.has(id) && !remainingQuestionIds.has(id));
+        return !(removedGroups.has(unit.groupId) && !remainingGroupIds.has(unit.groupId)) && !onlyInRemovedBank;
+      });
+      if (!next.units.length) { removeIds.push(session.id); continue; }
+      const keptIds = new Set(next.units.flatMap(unit => unit.questionIds || []));
+      next.responses = Object.fromEntries(Object.entries(session.responses || {}).filter(([id]) => keptIds.has(id)));
+      if (session.answers) next.answers = session.answers.filter(answer => keptIds.has(answer.questionId));
+    } else if (session.vignetteIds) {
+      next.vignetteIds = session.vignetteIds.filter(id => !removedGroups.has(id) || remainingGroupIds.has(id));
+      if (!next.vignetteIds.length) { removeIds.push(session.id); continue; }
+      next.responses = Object.fromEntries(Object.entries(session.responses || {}).filter(([id]) => !removedQuestions.has(id) || remainingQuestionIds.has(id)));
+      if (session.answers) next.answers = session.answers.filter(answer => !removedQuestions.has(answer.questionId) || remainingQuestionIds.has(answer.questionId));
+    } else if ((session.answers || []).some(answer => removedQuestions.has(answer.questionId) && !remainingQuestionIds.has(answer.questionId))) {
+      next.answers = session.answers.filter(answer => !removedQuestions.has(answer.questionId) || remainingQuestionIds.has(answer.questionId));
+      if (!next.answers.length) { removeIds.push(session.id); continue; }
+    } else continue;
+    updates.push(next);
+  }
+  return { removeIds, updates };
 }
 
 export function gradeSession(session, groups) {
@@ -64,8 +103,8 @@ const metrics = (ids, attempts) => {
   return { total: ids.length, practiced: done.length, firstCorrect: first.filter(a => a.correct).length, firstN: first.length, latestCorrect: latest.filter(a => a.correct).length, latestN: latest.length, repeatedWrong: done.filter(id => attempts.get(id).filter(a => !a.correct).length >= 2).length, retryCorrect: retries.filter(a => a.correct).length, retryN: retries.length };
 };
 
-export function summarize(sessions, groups) {
-  const attempts = attemptsByQuestion(sessions);
+export function summarize(sessions, groups, includeWord = true) {
+  const attempts = attemptsByQuestion(sessions, includeWord);
   const topics = new Map();
   groups.forEach(group => {
     if (!topics.has(group.topic)) topics.set(group.topic, { ids: new Set(), vignetteIds: new Set(), modules: new Map() });
