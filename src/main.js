@@ -21,7 +21,7 @@ function preview() {
   const bank = state.preview, groups = bank.vignettes, allQuestions = groups.flatMap(group => group.questions);
   const count = formCounts(groups), warningCount = groups.flatMap(group => group.warnings.concat(group.questions.flatMap(q => q.warnings))).length;
   const exclusions = bank.exclusions || [];
-  shell(`<div class="page-head"><div><div class="eyebrow">IMPORT PREVIEW</div><h2>逐題確認後匯入</h2><p>${count.v} 個 Vignette 題組 · ${count.s} 個獨立單題 · 共 ${allQuestions.length} 題 · ${warningCount} 個待確認</p></div><div class="actions"><button class="secondary" data-cancel-preview>取消</button><button class="primary" data-confirm-import>確認匯入</button></div></div>
+  shell(`<div class="page-head"><div><div class="eyebrow">IMPORT PREVIEW</div><h2>逐題確認後匯入</h2><p>${count.v} 個 Vignette 題組（${groups.filter(g => formOf(g) === 'vignette').reduce((n, g) => n + g.questions.length, 0)} 題） · ${count.s} 個獨立單題 · 共 ${allQuestions.length} 題 · 排除 ${exclusions.length} 題 · ${warningCount} 個待確認</p>${bank.classification ? `<small>已套用：${esc(bank.classification.label)}；題號均為 Word 原始題號。</small>` : ''}</div><div class="actions"><button class="secondary" data-cancel-preview>取消</button><button class="primary" data-confirm-import>確認匯入</button></div></div>
   <p class="privacy-note">請核對預覽後匯入；缺少答案或有選項衝突的題目不會進入練習。</p>
   ${bank.warnings.map(w => `<div class="warning">${esc(w)}</div>`).join('')}
   <details class="preview exclusions" ${exclusions.length ? 'open' : ''}><summary><span>排除內容</span><b>${exclusions.length} 項</b></summary>${exclusions.length ? `<ul>${exclusions.map(item => `<li><b>${esc(item.reason)}</b><br>${esc(item.content)}</li>`).join('')}</ul>` : '<p class="muted">沒有排除項目。</p>'}</details>
