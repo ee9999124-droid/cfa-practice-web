@@ -38,6 +38,6 @@ test('session, grading, submit metrics and topic/module statistics count questio
   assert.equal(ethics.modules.find(module => module.name === 'Standards').total, 2);
 });
 
-test('legacy vignetteIds sessions remain resolvable', () => {
-  assert.equal(sessionGroups({ vignetteIds: ['v1'] }, groups)[0].questions.length, 2);
+test('legacy vignette ID matching was removed', () => {
+  assert.deepEqual(sessionGroups({ vignetteIds: ['v1'] }, groups), []);
 });

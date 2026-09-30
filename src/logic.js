@@ -2,7 +2,8 @@ export const formOf = group => ['vignette', 'standalone'].includes(group.form) ?
 
 export function available(groups, selected, form = 'all') {
   const scoped = groups.filter(group => selected.has('all') || selected.has(`t:${group.topic}`) || selected.has(`m:${group.topic}|${group.module}`));
-  return form === 'all' ? scoped.filter(group => formOf(group) !== 'unknown') : scoped.filter(group => formOf(group) === form);
+  const reliable = scoped.filter(group => group.questions?.length && group.questions.every(question => question.ready !== false && question.correctKey));
+  return form === 'all' ? reliable.filter(group => formOf(group) !== 'unknown') : reliable.filter(group => formOf(group) === form);
 }
 
 const attemptsByQuestion = sessions => {
@@ -44,7 +45,7 @@ export function sessionGroups(session, groups) {
     const ids = new Set(unit.questionIds || group.questions.map(question => question.id));
     return { ...group, questions: group.questions.filter(question => ids.has(question.id)) };
   }).filter(Boolean);
-  return (session.vignetteIds || []).map(id => groups.find(group => group.id === id)).filter(Boolean);
+  return [];
 }
 
 export function gradeSession(session, groups) {

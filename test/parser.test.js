@@ -2,20 +2,55 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseBlocks } from '../src/parser.js';
 const p = text => ({ type: 'p', text, images: [] });
-const question = (number, stem) => [p(`${number} Multiple Choice`), p(stem), p('A. Yes'), p('B. No'), p('Correct answer:'), p('A. Yes')];
+const table = rows => ({ type: 'table', rows });
+const question = (number, stem) => [
+  p(`${number} Multiple Choice`), p(stem), p('A. Yes'), p('B. No'),
+  p('Your answer:'), p('B. No'), p('Correct answer:'), p('A. Yes'),
+  p('Feedback'), p('The official explanation is preserved.')
+];
 
-test('Word block parsing distinguishes explicit shared context from a standalone question', () => {
+test('distinguishes explicit shared context from a standalone question', () => {
   const bank = parseBlocks([
-    p('CFA-Level II: Ethics'), p('Module 1: Conduct'), p('Vignette'), p('Lee advises two clients.'),
+    p('CFA-Level II: Ethics'), p('Module 1: Conduct'), p('Vignette'), p('Lee advises two clients.'), table([['Year', 'Return']]),
     ...question(1, 'Is the conduct appropriate?'), ...question(2, 'Was disclosure required?'),
     p('Module 2: Independent practice'), ...question(3, 'What is the best answer?')
   ], 'mixed.docx');
   assert.equal(bank.vignettes.length, 2);
   assert.equal(bank.vignettes[0].form, 'vignette');
   assert.equal(bank.vignettes[0].questions.length, 2);
+  assert.deepEqual(bank.vignettes[0].context[1].rows, [['Year', 'Return']]);
   assert.equal(bank.vignettes[1].form, 'standalone');
   assert.equal(bank.vignettes[1].questions.length, 1);
-  assert.equal(bank.vignettes[1].context.length, 0);
+});
+
+test('excludes summaries and non-multiple-choice questions without treating percentages as summaries', () => {
+  const bank = parseBlocks([
+    p('Quiz review'), p('You scored 75%'), p('1 Numeric Entry'), p('Enter the return.'),
+    p('2 Multiple Choice'), p('The return was 12%. Which statement is correct?'), p('A. First'), p('B. Second'), p('Correct answer:'), p('B. Second')
+  ]);
+  assert.equal(bank.vignettes[0].questions.length, 1);
+  assert.match(bank.vignettes[0].questions[0].stem[0], /12%/);
+  assert.equal(bank.exclusions.length, 3);
+  assert.ok(bank.exclusions.some(item => /非單選題/.test(item.reason)));
+});
+
+test('keeps imported response separate and preserves official feedback', () => {
+  const bank = parseBlocks(question(1, 'Question?'));
+  const parsed = bank.vignettes[0].questions[0];
+  assert.equal(parsed.correctKey, 'A');
+  assert.equal(parsed.originalAnswerKey, 'B');
+  assert.equal(parsed.explanation[0], 'The official explanation is preserved.');
+  assert.deepEqual(bank.importResponses, [{ questionId: parsed.id, selected: 'B', raw: 'B. No' }]);
+});
+
+test('deduplicates identical labels but quarantines conflicting duplicate labels', () => {
+  const same = parseBlocks([p('1 Multiple Choice'), p('Question?'), p('A. One'), p('A. One'), p('B. Two'), p('Correct answer:'), p('A. One')]).vignettes[0].questions[0];
+  assert.deepEqual(same.options.map(option => option.key), ['A', 'B']);
+  assert.equal(same.ready, true);
+  const conflict = parseBlocks([p('1 Multiple Choice'), p('Question?'), p('A. One'), p('A. Different'), p('B. Two'), p('Correct answer:'), p('A. One')]).vignettes[0].questions[0];
+  assert.deepEqual(conflict.options.map(option => option.key), ['A', 'B']);
+  assert.equal(conflict.ready, false);
+  assert.match(conflict.warnings[0], /不同內容/);
 });
 
 test('ambiguous unmarked context remains unconfirmed', () => {

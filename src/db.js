@@ -35,6 +35,15 @@ export async function remove(store, id) {
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
   });
 }
+export async function clearAll() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES, 'readwrite');
+    STORES.forEach(name => tx.objectStore(name).clear());
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
 export async function exportData() { return { version: 1, exportedAt: new Date().toISOString(), banks: await all('banks'), sessions: await all('sessions') }; }
 export async function importData(data) {
   if (data?.version !== 1 || !Array.isArray(data.banks) || !Array.isArray(data.sessions)) throw new Error('不支援的備份格式');
