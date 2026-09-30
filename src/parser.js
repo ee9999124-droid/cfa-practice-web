@@ -59,6 +59,78 @@ const answerKey = (value, options) => {
 };
 const blockSignature = block => block.type === 'table' ? JSON.stringify(block.rows) : `${block.text}|${(block.images || []).join('|')}`;
 
+const range = (from, to) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+
+// Question numbers in classification maps are always the original Word numbers. They are
+// deliberately arrays (rather than inferred runs) so exclusions never shift later matches.
+export const QUESTION_GROUP_MAPS = {
+  ci: {
+    label: 'CI 已核對題組對照表',
+    topicPattern: /(?:corporate\s+issuers|公司發行人|企業發行人|^CI$)/i,
+    modules: {
+      1: { groups: [range(5, 9), range(28, 29), range(30, 35), range(36, 39), range(40, 43)], standalone: [...range(1, 4), ...range(11, 27), ...range(44, 69)], exclude: [10] },
+      2: { groups: [[...range(1, 3), ...range(5, 6)], range(7, 10), range(11, 14), range(15, 18), range(19, 22)], standalone: range(23, 28), exclude: [4] },
+      3: { groups: [range(1, 5)], standalone: range(6, 27), exclude: [] },
+      4: { groups: [range(1, 5), range(6, 10)], standalone: range(11, 31), exclude: [] }
+    }
+  }
+};
+
+const moduleNumber = value => +(normalized(value).match(/^Module\s+(\d+)/i)?.[1] || 0);
+const questionNumber = question => +(headerInfo(question.header)?.number || 0);
+
+function applyQuestionGroupMap(bank, map) {
+  const sourceGroups = bank.vignettes;
+  const sources = new Map();
+  for (const group of sourceGroups) for (const question of group.questions) {
+    const key = `${moduleNumber(group.module)}:${questionNumber(question)}`;
+    if (!sources.has(key)) sources.set(key, { question, group });
+    else bank.warnings.push(`${map.label}：${group.module} 原始題號 ${questionNumber(question)} 重複，僅採用第一題`);
+  }
+  const classified = [], consumed = new Set();
+  const addGroup = (source, questions, form, numbers) => {
+    const context = form === 'vignette' ? source.group.context : [];
+    const group = {
+      topic: source.group.topic, module: source.group.module, form,
+      formReason: `${map.label}（Word 原始題號 ${numbers.join('、')}）`, context,
+      questions, warnings: []
+    };
+    group.id = stableId('v', [group.topic, group.module, form, ...context.map(blockSignature), ...questions.map(q => q.id)].join('|'));
+    questions.forEach(question => { question.vignetteId = group.id; });
+    classified.push(group);
+  };
+  for (const [module, rules] of Object.entries(map.modules)) {
+    for (const numbers of rules.groups) {
+      const entries = numbers.map(number => sources.get(`${module}:${number}`));
+      if (entries.some(entry => !entry)) {
+        bank.warnings.push(`${map.label}：Module ${module} 題組 ${numbers.join('、')} 有原始題號缺漏，未套用此組`);
+        continue;
+      }
+      entries.forEach(entry => consumed.add(`${module}:${questionNumber(entry.question)}`));
+      // The first question owns the corresponding Vignette. This also intentionally makes
+      // Module 2 questions 5–6 reuse the Titian context belonging to question 1.
+      addGroup(entries[0], entries.map(entry => entry.question), 'vignette', numbers);
+    }
+    for (const number of rules.standalone) {
+      const entry = sources.get(`${module}:${number}`);
+      if (!entry) { bank.warnings.push(`${map.label}：Module ${module} 獨立題原始題號 ${number} 缺漏`); continue; }
+      consumed.add(`${module}:${number}`);
+      addGroup(entry, [entry.question], 'standalone', [number]);
+    }
+    for (const number of rules.exclude) {
+      const key = `${module}:${number}`, entry = sources.get(key);
+      consumed.add(key);
+      if (entry) bank.exclusions.push({ content: entry.question.header, reason: `${map.label}指定排除（Module ${module} 原始題號 ${number}）`, blocks: entry.question.sourceBlocks });
+      else if (!bank.exclusions.some(item => headerInfo(item.content)?.number === String(number) && moduleNumber(item.module || `Module ${module}`) === +module)) {
+        bank.warnings.push(`${map.label}：找不到指定排除的 Module ${module} 原始題號 ${number}`);
+      }
+    }
+  }
+  for (const [key] of sources) if (!consumed.has(key)) bank.warnings.push(`${map.label}：${key.replace(':', ' 原始題號 ')} 未列入對照表，因此未匯入`);
+  bank.vignettes = classified;
+  bank.classification = { key: 'ci', label: map.label };
+}
+
 function parseQuestion(blocks, topic, module, vignetteSeed) {
   const header = blocks[0]?.type === 'p' ? normalized(blocks[0].text) : '';
   const content = blocks.slice(1);
@@ -131,7 +203,7 @@ function parseQuestion(blocks, topic, module, vignetteSeed) {
   };
 }
 
-export function parseBlocks(blocks, filename = 'document.docx') {
+export function parseBlocks(blocks, filename = 'document.docx', classification = 'auto') {
   let topic = '未分類 Topic', module = '未分類 Module', group = null, pending = [];
   const vignettes = [], exclusions = [], globalWarnings = [];
   // Bare scores and times are interface data only inside an identified review summary.
@@ -172,7 +244,7 @@ export function parseBlocks(blocks, filename = 'document.docx') {
       if (header.kind !== 'multiple choice') {
         // An excluded exercise ends the preceding shared-context run.
         flush(); pending = [];
-        exclusions.push({ content: header.raw, reason: `非單選題（${header.kind}）`, blocks: questionBlocks });
+        exclusions.push({ content: header.raw, reason: `非單選題（${header.kind}）`, blocks: questionBlocks, module });
         continue;
       }
       const implicit = !group;
@@ -187,8 +259,15 @@ export function parseBlocks(blocks, filename = 'document.docx') {
   }
   flush();
   if (!vignettes.length) globalWarnings.push('沒有找到可匯入的單選題');
-  const contentId = stableId('bank', vignettes.map(v => v.id).join('|'));
-  return { id: contentId, contentId, name: filename, importedAt: new Date().toISOString(), vignettes, exclusions, importResponses: vignettes.flatMap(v => v.questions.filter(q => q.originalAnswerRaw).map(q => ({ questionId: q.id, selected: q.originalAnswerKey, raw: q.originalAnswerRaw }))), warnings: globalWarnings };
+  const bank = { name: filename, importedAt: new Date().toISOString(), vignettes, exclusions, warnings: globalWarnings };
+  const selectedMap = classification === 'auto'
+    ? Object.values(QUESTION_GROUP_MAPS).find(map => vignettes.some(group => map.topicPattern.test(normalized(group.topic))) || /(?:^|[^a-z])CI(?:[^a-z]|$)/i.test(filename))
+    : QUESTION_GROUP_MAPS[classification];
+  if (selectedMap) applyQuestionGroupMap(bank, selectedMap);
+  bank.contentId = stableId('bank', bank.vignettes.map(v => v.id).join('|'));
+  bank.id = bank.contentId;
+  bank.importResponses = bank.vignettes.flatMap(v => v.questions.filter(q => q.originalAnswerRaw).map(q => ({ questionId: q.id, selected: q.originalAnswerKey, raw: q.originalAnswerRaw })));
+  return bank;
 }
 
 export async function parseDocx(file) {
