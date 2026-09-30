@@ -170,6 +170,8 @@ export function parseBlocks(blocks, filename = 'document.docx') {
         questionBlocks.push(blocks[i++]);
       }
       if (header.kind !== 'multiple choice') {
+        // An excluded exercise ends the preceding shared-context run.
+        flush(); pending = [];
         exclusions.push({ content: header.raw, reason: `非單選題（${header.kind}）`, blocks: questionBlocks });
         continue;
       }

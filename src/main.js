@@ -1,4 +1,4 @@
-import { parseDocx } from './parser.js';
+import { parseDocx, stableId } from './parser.js';
 import * as db from './db.js';
 import { available, chooseQuestions, formOf, gradeSession, sessionGroups, summarize, detachBankSessions } from './logic.js';
 
@@ -25,7 +25,7 @@ function preview() {
   <p class="privacy-note">請核對預覽後匯入；缺少答案或有選項衝突的題目不會進入練習。</p>
   ${bank.warnings.map(w => `<div class="warning">${esc(w)}</div>`).join('')}
   <details class="preview exclusions" ${exclusions.length ? 'open' : ''}><summary><span>排除內容</span><b>${exclusions.length} 項</b></summary>${exclusions.length ? `<ul>${exclusions.map(item => `<li><b>${esc(item.reason)}</b><br>${esc(item.content)}</li>`).join('')}</ul>` : '<p class="muted">沒有排除項目。</p>'}</details>
-  ${groups.map((group, i) => `<details class="preview" ${i === 0 ? 'open' : ''}><summary><span>${labelForm(group.form)} · ${esc(group.topic)}</span><b>${group.questions.length} 題</b></summary>${groupEditor(group, 0, i)}<div class="edit-grid"><label>Topic<input data-v="${i}" data-field="topic" value="${esc(group.topic)}"></label><label>Module<input data-v="${i}" data-field="module" value="${esc(group.module)}"></label></div>${group.context.length ? `<h4>共用情境（完整原文）</h4><div class="context-full">${blocksHtml(group.context)}</div>` : '<p class="muted">未偵測到共用情境。</p>'}${group.warnings.map(w => `<div class="warning">${esc(w)}</div>`).join('')}<div class="question-previews">${group.questions.map((q, qi) => `<article class="question-preview ${questionReady(q) ? '' : 'unreliable'}"><h4>${esc(q.header || `題目 ${qi + 1}`)} ${questionReady(q) ? '' : '<mark>不可練習</mark>'}</h4><div class="original-content">${blocksHtml(questionBlocks(q, 'stem'))}</div><ol class="preview-options" type="A">${q.options.map(option => `<li>${esc(option.text.replace(/^[A-Z][.)]\s*/, ''))}</li>`).join('')}</ol><div class="answer-edit"><label>正確答案<select data-answer="${i}|${qi}"><option value="">待確認</option>${q.options.map(option => `<option value="${option.key}" ${q.correctKey === option.key ? 'selected' : ''}>${option.key}</option>`).join('')}</select></label><div><small>Word 原作答（獨立匯入紀錄）</small><b>${esc(q.originalAnswerKey || q.originalAnswerRaw || '未提供')}</b></div></div><h5>官方詳解</h5><div class="original-content">${blocksHtml(questionBlocks(q, 'explanation')) || '<p class="muted">未辨識到詳解。</p>'}</div>${(q.optionConflicts || []).map(c => `<div class="warning">選項 ${esc(c.key)} 衝突：${c.values.map(esc).join(' / ')}</div>`).join('')}${q.warnings.map(w => `<div class="warning">${esc(w)}</div>`).join('')}</article>`).join('')}</div></details>`).join('')}`);
+  ${groups.map((group, i) => `<details class="preview" ${i === 0 ? 'open' : ''}><summary><span>${labelForm(group.form)} · ${esc(group.topic)}</span><b>${group.questions.length} 題</b></summary>${groupEditor(group, 0, i)}<div class="edit-grid"><label>Topic<input data-v="${i}" data-field="topic" value="${esc(group.topic)}"></label><label>Module<input data-v="${i}" data-field="module" value="${esc(group.module)}"></label></div>${group.context.length ? `<h4>共用情境（完整原文）</h4><div class="context-full">${blocksHtml(group.context)}</div>` : '<p class="muted">未偵測到共用情境。</p>'}${group.warnings.map(w => `<div class="warning">${esc(w)}</div>`).join('')}<div class="question-previews">${group.questions.map((q, qi) => `<article class="question-preview ${questionReady(q) ? '' : 'unreliable'}"><h4>${esc(q.header || `題目 ${qi + 1}`)} ${questionReady(q) ? '' : '<mark>不可練習</mark>'}</h4><button class="secondary" data-standalone="${i}|${qi}">設為獨立單題</button><div class="original-content">${blocksHtml(questionBlocks(q, 'stem'))}</div><ol class="preview-options" type="A">${q.options.map(option => `<li>${esc(option.text.replace(/^[A-Z][.)]\s*/, ''))}</li>`).join('')}</ol><div class="answer-edit"><label>正確答案<select data-answer="${i}|${qi}"><option value="">待確認</option>${q.options.map(option => `<option value="${option.key}" ${q.correctKey === option.key ? 'selected' : ''}>${option.key}</option>`).join('')}</select></label><div><small>Word 原作答（獨立匯入紀錄）</small><b>${esc(q.originalAnswerKey || q.originalAnswerRaw || '未提供')}</b></div></div><h5>官方詳解</h5><div class="original-content">${blocksHtml(questionBlocks(q, 'explanation')) || '<p class="muted">未辨識到詳解。</p>'}</div>${(q.optionConflicts || []).map(c => `<div class="warning">選項 ${esc(c.key)} 衝突：${c.values.map(esc).join(' / ')}</div>`).join('')}${q.warnings.map(w => `<div class="warning">${esc(w)}</div>`).join('')}</article>`).join('')}</div></details>`).join('')}`);
 }
 function topicData(groups) { return [...new Set(groups.map(g => g.topic))].map(topic => ({ topic, groups: groups.filter(g => g.topic === topic) })); }
 function scopeState(groups, topic, module) { const keys = groups.filter(g => g.topic === topic && (!module || g.module === module)); return keys.length && keys.every(g => state.selected.has(`t:${topic}`) || state.selected.has(`m:${topic}|${g.module}`) || state.selected.has('all')); }
@@ -57,11 +57,26 @@ async function removeBank(bank) {
   state.draft = state.sessions.find(s => !s.submittedAt) || null;
   state.practiceIndex = 0;
 }
+function splitStandalone(bank, gi, qi) {
+  const group = bank.vignettes[gi], question = group.questions[qi];
+  const parts = [];
+  const makePart = (questions, form, context) => {
+    if (!questions.length) return;
+    const id = stableId('v', `${group.id}|${form}|${questions.map(q => q.id).join('|')}`);
+    const part = { ...group, id, questions, form, context, warnings: [], formReason: '使用者逐題確認分組' };
+    questions.forEach(q => { q.vignetteId = id; }); parts.push(part);
+  };
+  makePart(group.questions.slice(0, qi), group.form, group.context);
+  makePart([question], 'standalone', []);
+  makePart(group.questions.slice(qi + 1), group.form, group.context);
+  bank.vignettes.splice(gi, 1, ...parts);
+}
 function selectedQuestion() { return sessionGroups(state.draft, allGroups()).flatMap(g => g.questions)[state.practiceIndex]; }
 function bind() {
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => { state.page = el.dataset.go; render(); });
   document.querySelector('[data-resume]')?.addEventListener('click', () => { state.page = 'practice'; render(); });
   const file = document.querySelector('#docx'); if (file) file.onchange = async () => { try { state.preview = await parseDocx(file.files[0]); render(); } catch (error) { state.notice = error.message; render(); } };
+  document.querySelectorAll('[data-standalone]').forEach(el => el.onclick = () => { const [gi, qi] = el.dataset.standalone.split('|').map(Number); splitStandalone(state.preview, gi, qi); render(); });
   document.querySelectorAll('[data-answer]').forEach(el => el.onchange = () => { const [gi, qi] = el.dataset.answer.split('|').map(Number), question = state.preview.vignettes[gi].questions[qi]; question.correctKey = el.value; question.ready = !!el.value && question.options.length >= 2 && !question.warnings.some(w => w.startsWith('選項 ')); render(); });
   document.querySelectorAll('[data-field]').forEach(el => el.oninput = () => state.preview.vignettes[+el.dataset.v][el.dataset.field] = el.value);
   document.querySelectorAll('[data-form-group]').forEach(el => el.onchange = async () => { const bankIndex = el.dataset.bank; const bank = bankIndex === undefined ? state.preview : state.banks[+bankIndex]; const group = bank.vignettes[+el.dataset.formGroup]; group.form = el.value; group.formReason = '使用者手動確認'; if (bankIndex !== undefined) await db.put('banks', bank); render(); });
