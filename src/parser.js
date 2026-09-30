@@ -46,21 +46,23 @@ function parseQuestion(blocks, topic, module, vignetteSeed) {
   return {id:stableId('q',signature),header,stem,options,correctKey,answerRaw,explanation,warnings,sourceBlocks:blocks};
 }
 export function parseBlocks(blocks, filename='document.docx') {
-  let topic='未分類 Topic', module='未分類 Module', vig=null; const vignettes=[]; const globalWarnings=[];
-  const flush=()=>{if(vig&&vig.questions.length){vig.id=stableId('v',[topic,module,...vig.context.map(b=>b.type==='p'?b.text:JSON.stringify(b.rows))].join('|')); vig.questions.forEach(q=>q.vignetteId=vig.id); vignettes.push(vig);} vig=null;};
+  let topic='未分類 Topic', module='未分類 Module', vig=null, pending=[]; const vignettes=[]; const globalWarnings=[];
+  const flush=()=>{if(vig&&vig.questions.length){vig.id=stableId('v',[vig.topic,vig.module,...vig.context.map(b=>b.type==='p'?b.text:JSON.stringify(b.rows))].join('|')); vig.questions.forEach(q=>q.vignetteId=vig.id); vignettes.push(vig);} vig=null;};
   for(let i=0;i<blocks.length;) {
     const b=blocks[i], s=b.type==='p'?b.text.trim():'';
-    if(/^CFA-.*:\s*/.test(s)){topic=s.replace(/^.*?:\s*/,'')||s;i++;continue;}
-    if(/^Module\s+\d+\s*:/i.test(s)){flush();module=s;i++;continue;}
-    if(/^Vignette$/i.test(s)){flush();vig={topic,module,context:[],questions:[],warnings:[]};i++;continue;}
+    if(/^CFA-.*:\s*/.test(s)){flush();pending=[];topic=s.replace(/^.*?:\s*/,'')||s;i++;continue;}
+    if(/^Module\s+\d+\s*:/i.test(s)){flush();pending=[];module=s;i++;continue;}
+    if(/^Vignette$/i.test(s)){flush();vig={topic,module,form:'vignette',formReason:'文件含有 Vignette 標記',context:pending,questions:[],warnings:[]};pending=[];i++;continue;}
     if(qHeader(s)){
-      if(!vig){vig={topic,module,context:[],questions:[],warnings:['題目前未找到 Vignette 標記']};}
+      const implicit=!vig;
+      if(implicit) vig={topic,module,form:pending.length?'unknown':'standalone',formReason:pending.length?'題目前有內容，但沒有明確的 Vignette 標記':'沒有共用情境或 Vignette 標記',context:pending,questions:[],warnings:pending.length?['題型待確認：請選擇 Vignette 題組或獨立單題']:[]};
+      pending=[];
       const q=[]; while(i<blocks.length){const t=blocks[i].type==='p'?blocks[i].text.trim():''; if(q.length&&(qHeader(t)||/^Vignette$/i.test(t)||/^Module\s+\d+\s*:/i.test(t)))break;q.push(blocks[i++]);}
-      const parsed=parseQuestion(q,topic,module,vig.context.map(x=>x.text||'').join('|')); vig.questions.push(parsed); continue;
+      const parsed=parseQuestion(q,topic,module,vig.context.map(x=>x.text||'').join('|')); vig.questions.push(parsed); if(implicit) flush(); continue;
     }
-    if(vig) vig.context.push(b); i++;
+    if(vig) vig.context.push(b); else pending.push(b); i++;
   } flush();
-  if(!vignettes.length) globalWarnings.push('沒有找到可匯入的題組');
+  if(!vignettes.length) globalWarnings.push('沒有找到可匯入的題目');
   return {id:stableId('bank',vignettes.map(v=>v.id).join('|')),name:filename,importedAt:new Date().toISOString(),vignettes,warnings:globalWarnings};
 }
 export async function parseDocx(file) {
