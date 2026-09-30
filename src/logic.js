@@ -1,24 +1,118 @@
-export function available(vignettes, selected) {
-  return vignettes.filter(v => selected.has(`t:${v.topic}`) || selected.has(`m:${v.topic}|${v.module}`));
+export const formOf = group => ['vignette', 'standalone'].includes(group.form) ? group.form : 'unknown';
+
+export function available(groups, selected, form = 'all') {
+  const scoped = groups.filter(group => selected.has('all') || selected.has(`t:${group.topic}`) || selected.has(`m:${group.topic}|${group.module}`));
+  return form === 'all' ? scoped.filter(group => formOf(group) !== 'unknown') : scoped.filter(group => formOf(group) === form);
 }
-export function chooseVignettes(pool, mode, amountType, amount, sessions, random=Math.random) {
-  const attempts=sessions.filter(s=>s.submittedAt).flatMap(s=>s.answers||[]);
-  const byQ=new Map(); attempts.forEach(a=>{if(!byQ.has(a.questionId))byQ.set(a.questionId,[]);byQ.get(a.questionId).push(a);});
-  let candidates=pool.filter(v=>mode!=='wrong'||v.questions.some(q=>(byQ.get(q.id)||[]).at(-1)?.correct===false));
-  const score=v=>v.questions.reduce((n,q)=>n+(byQ.has(q.id)?0:1),0);
-  candidates=[...candidates].sort(mode==='unseen'?(a,b)=>score(b)-score(a):()=>random()-.5);
-  if(amountType==='vignettes') return candidates.slice(0,amount);
-  const out=[];let count=0; for(const v of candidates){if(out.length&&Math.abs(count-amount)<=Math.abs(count+v.questions.length-amount))break;out.push(v);count+=v.questions.length;if(count>=amount)break;} return out;
+
+const attemptsByQuestion = (sessions, includeWord = true) => {
+  const result = new Map();
+  sessions.filter(session => session.submittedAt && (includeWord || session.source !== 'word')).flatMap(session => (session.answers || []).map(answer => ({ ...answer, attemptedAt: session.submittedAt }))).filter(answer => answer.selected).forEach(answer => {
+    if (!result.has(answer.questionId)) result.set(answer.questionId, []);
+    result.get(answer.questionId).push(answer);
+  });
+  result.forEach(items => items.sort((a, b) => String(a.attemptedAt).localeCompare(String(b.attemptedAt))));
+  return result;
+};
+
+/** Select atomic units: a vignette is always atomic; every standalone question is atomic. */
+export function chooseQuestions(pool, mode, target, sessions, random = Math.random) {
+  const attempts = attemptsByQuestion(sessions);
+  const units = pool.flatMap(group => formOf(group) === 'standalone'
+    ? group.questions.map(question => ({ group, questions: [question] }))
+    : [{ group, questions: group.questions }]);
+  let candidates = units.filter(unit => mode !== 'wrong' || unit.questions.some(question => attempts.get(question.id)?.at(-1)?.correct === false));
+  const unseen = unit => unit.questions.reduce((count, question) => count + (attempts.has(question.id) ? 0 : 1), 0);
+  candidates = [...candidates].sort(mode === 'unseen' ? (a, b) => unseen(b) - unseen(a) : () => random() - .5);
+  const chosen = [];
+  let count = 0;
+  for (const unit of candidates) {
+    if (formOf(unit.group) === 'vignette') {
+      // Prefer the closest total, but never split a shared-context set.
+      if (chosen.length && count >= target) break;
+      if (chosen.length && Math.abs(target - count) < Math.abs(target - count - unit.questions.length)) continue;
+    } else if (count >= target) break;
+    chosen.push(unit);
+    count += unit.questions.length;
+  }
+  return chosen;
 }
-export function gradeSession(session, vignettes) {
-  const qs=new Map(vignettes.flatMap(v=>v.questions.map(q=>[q.id,{...q,topic:v.topic,module:v.module}])));
-  const answers=[...qs.entries()].map(([questionId,q])=>{const r=(session.responses||{})[questionId]||{};return {questionId,selected:r.selected||'',confidence:r.confidence||'',flagged:!!r.flagged,correct:!!r.selected&&r.selected===q.correctKey,topic:q.topic,module:q.module};});
-  return {...session,answers,submittedAt:new Date().toISOString()};
+
+export function sessionGroups(session, groups) {
+  if (session.units) return session.units.map(unit => {
+    const wanted = new Set(unit.questionIds || []);
+    // Old standalone imports could share a group ID; question IDs are the authoritative fallback.
+    const group = groups.find(item => item.id === unit.groupId && (!wanted.size || item.questions.some(question => wanted.has(question.id))))
+      || groups.find(item => item.questions.some(question => wanted.has(question.id)));
+    if (!group) return null;
+    const ids = wanted.size ? wanted : new Set(group.questions.map(question => question.id));
+    return { ...group, questions: group.questions.filter(question => ids.has(question.id)) };
+  }).filter(Boolean);
+  return (session.vignetteIds || []).map(id => groups.find(group => group.id === id)).filter(Boolean);
 }
-export function summarize(sessions,vignettes) {
- const submitted=sessions.filter(s=>s.submittedAt); const totalByGroup=new Map();
- vignettes.forEach(v=>v.questions.forEach(q=>{for(const key of ['全部',v.topic,`${v.topic} / ${v.module}`]){if(!totalByGroup.has(key))totalByGroup.set(key,new Set());totalByGroup.get(key).add(q.id);}}));
- const attempts=new Map();submitted.forEach(s=>(s.answers||[]).forEach(a=>{if(!attempts.has(a.questionId))attempts.set(a.questionId,[]);attempts.get(a.questionId).push({...a,at:s.submittedAt});}));
- const groups=[]; for(const [name,total] of totalByGroup){const ids=[...total],done=ids.filter(id=>attempts.has(id));const first=done.map(id=>attempts.get(id)[0]);const latest=done.map(id=>attempts.get(id).at(-1));const wrongAgain=done.filter(id=>attempts.get(id).filter(a=>!a.correct).length>=2).length;const retries=done.flatMap(id=>attempts.get(id).slice(1).filter((a,i,arr)=>attempts.get(id)[i]?.correct===false));groups.push({name,total:ids.length,practiced:done.length,firstCorrect:first.filter(a=>a.correct).length,firstN:first.length,latestCorrect:latest.filter(a=>a.correct).length,latestN:latest.length,repeatedWrong:wrongAgain,retryCorrect:retries.filter(a=>a.correct).length,retryN:retries.length});}
- return groups;
+
+/** Build the exact session mutations needed when one bank is removed. */
+export function detachBankSessions(bank, remainingGroups, sessions) {
+  const removedGroups = new Set((bank.vignettes || []).map(group => group.id));
+  const removedQuestions = new Set((bank.vignettes || []).flatMap(group => group.questions.map(question => question.id)));
+  const remainingGroupIds = new Set(remainingGroups.map(group => group.id));
+  const remainingQuestionIds = new Set(remainingGroups.flatMap(group => group.questions.map(question => question.id)));
+  const removeIds = [], updates = [];
+  for (const session of sessions) {
+    if (session.source === 'word' && session.bankId === bank.id) { removeIds.push(session.id); continue; }
+    let next = { ...session };
+    if (session.units) {
+      next.units = session.units.filter(unit => {
+        if (unit.bankId) return unit.bankId !== bank.id;
+        const questionIds = unit.questionIds || [];
+        const onlyInRemovedBank = questionIds.length && questionIds.every(id => removedQuestions.has(id) && !remainingQuestionIds.has(id));
+        return !(removedGroups.has(unit.groupId) && !remainingGroupIds.has(unit.groupId)) && !onlyInRemovedBank;
+      });
+      if (!next.units.length) { removeIds.push(session.id); continue; }
+      const keptIds = new Set(next.units.flatMap(unit => unit.questionIds || []));
+      next.responses = Object.fromEntries(Object.entries(session.responses || {}).filter(([id]) => keptIds.has(id)));
+      if (session.answers) next.answers = session.answers.filter(answer => keptIds.has(answer.questionId));
+    } else if (session.vignetteIds) {
+      next.vignetteIds = session.vignetteIds.filter(id => !removedGroups.has(id) || remainingGroupIds.has(id));
+      if (!next.vignetteIds.length) { removeIds.push(session.id); continue; }
+      next.responses = Object.fromEntries(Object.entries(session.responses || {}).filter(([id]) => !removedQuestions.has(id) || remainingQuestionIds.has(id)));
+      if (session.answers) next.answers = session.answers.filter(answer => !removedQuestions.has(answer.questionId) || remainingQuestionIds.has(answer.questionId));
+    } else if ((session.answers || []).some(answer => removedQuestions.has(answer.questionId) && !remainingQuestionIds.has(answer.questionId))) {
+      next.answers = session.answers.filter(answer => !removedQuestions.has(answer.questionId) || remainingQuestionIds.has(answer.questionId));
+      if (!next.answers.length) { removeIds.push(session.id); continue; }
+    } else continue;
+    updates.push(next);
+  }
+  return { removeIds, updates };
+}
+
+export function gradeSession(session, groups) {
+  const questions = new Map(groups.flatMap(group => group.questions.map(question => [question.id, { ...question, topic: group.topic, module: group.module }])));
+  const answers = [...questions].map(([questionId, question]) => {
+    const response = (session.responses || {})[questionId] || {};
+    return { questionId, selected: response.selected || '', confidence: response.confidence || '', flagged: !!response.flagged, correct: !!response.selected && response.selected === question.correctKey, topic: question.topic, module: question.module };
+  });
+  return { ...session, answers, submittedAt: new Date().toISOString() };
+}
+
+const metrics = (ids, attempts) => {
+  const done = ids.filter(id => attempts.has(id));
+  const first = done.map(id => attempts.get(id)[0]);
+  const latest = done.map(id => attempts.get(id).at(-1));
+  const retries = done.flatMap(id => attempts.get(id).slice(1).filter((answer, index) => attempts.get(id)[index]?.correct === false));
+  return { total: ids.length, practiced: done.length, firstCorrect: first.filter(a => a.correct).length, firstN: first.length, latestCorrect: latest.filter(a => a.correct).length, latestN: latest.length, repeatedWrong: done.filter(id => attempts.get(id).filter(a => !a.correct).length >= 2).length, retryCorrect: retries.filter(a => a.correct).length, retryN: retries.length };
+};
+
+export function summarize(sessions, groups, includeWord = true) {
+  const attempts = attemptsByQuestion(sessions, includeWord);
+  const topics = new Map();
+  groups.forEach(group => {
+    if (!topics.has(group.topic)) topics.set(group.topic, { ids: new Set(), vignetteIds: new Set(), modules: new Map() });
+    const topic = topics.get(group.topic);
+    if (!topic.modules.has(group.module)) topic.modules.set(group.module, { ids: new Set(), vignetteIds: new Set() });
+    const module = topic.modules.get(group.module);
+    group.questions.forEach(question => { topic.ids.add(question.id); module.ids.add(question.id); });
+    if (formOf(group) === 'vignette') { topic.vignetteIds.add(group.id); module.vignetteIds.add(group.id); }
+  });
+  return [...topics].map(([name, topic]) => ({ name, vignetteCount: topic.vignetteIds.size, ...metrics([...topic.ids], attempts), modules: [...topic.modules].map(([moduleName, module]) => ({ name: moduleName, vignetteCount: module.vignetteIds.size, ...metrics([...module.ids], attempts) })) }));
 }
