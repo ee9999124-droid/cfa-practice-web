@@ -86,3 +86,45 @@ test('answer metadata does not borrow a later feedback paragraph or option', () 
     p('Incorrect answer:'), p('Not Selected'), p('Correct answer: B. Two'), p('Feedback'), p('A statement in explanation.')]).vignettes[0].questions[0];
   assert.equal(q.originalAnswerKey, '');
 });
+
+test('CI map classifies every original number, preserves the owning contexts, and does not leak context to standalone questions', () => {
+  const groupStarts = { 1: [5, 28, 30, 36, 40], 2: [1, 7, 11, 15, 19], 3: [1], 4: [1, 6] };
+  const maxima = { 1: 69, 2: 28, 3: 27, 4: 31 };
+  const blocks = [p('CFA-Level I: Corporate Issuers')];
+  for (const module of [1, 2, 3, 4]) {
+    blocks.push(p(`Module ${module}: CI module ${module}`));
+    for (let number = 1; number <= maxima[module]; number++) {
+      if (groupStarts[module].includes(number)) {
+        blocks.push(p('Vignette'), p(module === 2 && number === 1 ? 'Titian situation' : `M${module} Q${number} situation`));
+        blocks.push(table([[`M${module}-${number}`, 'context table']]));
+        blocks.push({ type: 'p', text: '', images: [`context-${module}-${number}.png`] });
+      }
+      blocks.push(...question(number, `M${module} original question ${number}?`));
+    }
+  }
+  const bank = parseBlocks(blocks, 'CI.docx');
+  const vignetteGroups = bank.vignettes.filter(group => group.form === 'vignette');
+  const standaloneGroups = bank.vignettes.filter(group => group.form === 'standalone');
+  const numbers = group => group.questions.map(item => +item.header.match(/^\d+/)[0]);
+
+  assert.equal(bank.classification.key, 'ci');
+  assert.equal(vignetteGroups.length, 13);
+  // The supplied ranges arithmetically contain 57 grouped and 96 standalone questions.
+  assert.equal(vignetteGroups.reduce((sum, group) => sum + group.questions.length, 0), 57);
+  assert.equal(standaloneGroups.length, 96);
+  assert.equal(bank.vignettes.flatMap(group => group.questions).length, 153);
+  assert.deepEqual(bank.exclusions.filter(item => /指定排除/.test(item.reason)).map(item => item.content), ['10 Multiple Choice', '4 Multiple Choice']);
+  assert.deepEqual(vignetteGroups.map(numbers), [
+    [5, 6, 7, 8, 9], [28, 29], [30, 31, 32, 33, 34, 35], [36, 37, 38, 39], [40, 41, 42, 43],
+    [1, 2, 3, 5, 6], [7, 8, 9, 10], [11, 12, 13, 14], [15, 16, 17, 18], [19, 20, 21, 22],
+    [1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [6, 7, 8, 9, 10]
+  ]);
+  const titian = vignetteGroups.find(group => group.module.startsWith('Module 2') && numbers(group).includes(5));
+  assert.deepEqual(numbers(titian), [1, 2, 3, 5, 6]);
+  assert.equal(titian.context.some(block => block.text === 'Titian situation'), true);
+  assert.deepEqual(titian.context.find(block => block.type === 'table').rows, [['M2-1', 'context table']]);
+  assert.deepEqual(titian.context.find(block => block.images?.length).images, ['context-2-1.png']);
+  assert.equal(standaloneGroups.every(group => group.context.length === 0 && group.questions.length === 1), true);
+  assert.equal(standaloneGroups.some(group => group.questions[0].header.startsWith('10 Multiple Choice') && group.module.startsWith('Module 1')), false);
+  assert.equal(standaloneGroups.some(group => group.questions[0].header.startsWith('4 Multiple Choice') && group.module.startsWith('Module 2')), false);
+});
