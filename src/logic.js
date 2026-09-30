@@ -2,7 +2,8 @@ export const formOf = group => ['vignette', 'standalone'].includes(group.form) ?
 
 export function available(groups, selected, form = 'all') {
   const scoped = groups.filter(group => selected.has('all') || selected.has(`t:${group.topic}`) || selected.has(`m:${group.topic}|${group.module}`));
-  return form === 'all' ? scoped.filter(group => formOf(group) !== 'unknown') : scoped.filter(group => formOf(group) === form);
+  const reliable = scoped.filter(g => g.questions?.length && g.questions.every(q => q.ready !== false && q.correctKey));
+  return form === 'all' ? reliable.filter(group => formOf(group) !== 'unknown') : reliable.filter(group => formOf(group) === form);
 }
 
 const attemptsByQuestion = (sessions, includeWord = true) => {
@@ -16,7 +17,7 @@ const attemptsByQuestion = (sessions, includeWord = true) => {
 };
 
 /** Select atomic units: a vignette is always atomic; every standalone question is atomic. */
-export function chooseQuestions(pool, mode, target, sessions, random = Math.random) {
+export function chooseQuestions(pool, mode, target, sessions, random = Math.random, countBy = 'questions') {
   const attempts = attemptsByQuestion(sessions);
   const units = pool.flatMap(group => formOf(group) === 'standalone'
     ? group.questions.map(question => ({ group, questions: [question] }))
@@ -27,6 +28,10 @@ export function chooseQuestions(pool, mode, target, sessions, random = Math.rand
   const chosen = [];
   let count = 0;
   for (const unit of candidates) {
+    if (countBy === 'units') {
+      if (chosen.length >= target) break;
+      chosen.push(unit); count += unit.questions.length; continue;
+    }
     if (formOf(unit.group) === 'vignette') {
       // Prefer the closest total, but never split a shared-context set.
       if (chosen.length && count >= target) break;

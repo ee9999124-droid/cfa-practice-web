@@ -82,3 +82,10 @@ test('removing then reimporting a bank does not retain or double-count its old a
   assert.equal(topic.latestN, 1);
   assert.equal(topic.practiced, 1);
 });
+
+test('unit count selects requested complete groups instead of treating target as question count', () => {
+  const pool = [1, 2, 3].map(i => ({ id: `v${i}`, form: 'vignette', questions: [1, 2, 3, 4].map(j => ({ id: `q${i}-${j}` })) }));
+  const selected = chooseQuestions(pool, 'random', 2, [], () => .5, 'units');
+  assert.equal(selected.length, 2);
+  assert.equal(selected.flatMap(u => u.questions).length, 8);
+});

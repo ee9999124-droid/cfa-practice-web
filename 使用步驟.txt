@@ -1,0 +1,16 @@
+更新網站（本 ZIP 不含官方 Word 或個人作答資料）
+
+1. 解壓縮此 ZIP。
+2. 開啟 https://github.com/ee9999124-droid/cfa-practice-web ，點 Code，確認左上分支是 main。
+3. 點 Add file → Upload files，把解壓縮資料夾內的 index.html、src 資料夾、test 資料夾、package.json、README.md 拖進去。不要把整個外層資料夾或 ZIP 上傳。
+4. 點 Commit changes，把檔案更新到 main。
+5. 到 Actions，等最新 pages build and deployment 顯示綠色勾勾。
+6. 開啟網站 https://ee9999124-droid.github.io/cfa-practice-web/ ，按 Ctrl+Shift+R。
+7. 點右上「本機資料」→「清除全部測試資料」，確認清除。
+8. 點「題庫」→「選擇 Word 檔」，重新匯入。Word 不要上傳到 GitHub。
+9. 在預覽逐題核對；缺少答案、選項衝突或形式待確認的題目不會進入練習。
+10. 確認匯入後，開始練習，按 Submit 才會統一顯示答案。
+
+這份是 main 與 PR #4 的人工整合版本，沒有代你推送或合併 PR。上傳後不要再合併舊 PR #4，以免覆盖。
+
+驗證：Node 測試及 JavaScript 語法檢查通過。執行環境沒有瀏覽器執行檔，未進行實際瀏覽器畫面測試。沒有實際官方 Word 樣本，仍需核對真實文件。
