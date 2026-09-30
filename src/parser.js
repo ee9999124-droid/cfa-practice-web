@@ -32,7 +32,7 @@ function makeBlocks(doc, imageMap) {
 
 const headerInfo = value => {
   const text = normalized(value);
-  const match = text.match(/^(\d+)\s*(Multiple\s*Choice|Numeric\s*(?:Entry|Response|Input)|Fill\s*(?:in\s*the\s*Blank)?|Text\s*(?:Entry|Response|Input)|Essay|Short\s*Answer)\b/i);
+  const match = text.match(/^(\d+)\s*(Multiple\s*Choice|Numeric\s*(?:Entry|Response|Input)|Fill\s*(?:in\s*the\s*Blank)?|Text\s*(?:Entry|Response|Input)|Essay|Short\s*Answer)(?=\s|\d|$)/i);
   return match ? { number: match[1], kind: match[2].replace(/\s+/g, ' ').toLowerCase(), raw: text } : null;
 };
 const marker = value => normalized(value).replace(/：$/, ':').toLowerCase();
@@ -42,11 +42,11 @@ const markerType = value => {
   if (/^(your answer|selected answer|response|answer given|incorrect answer)\s*:/.test(text) || /^(your answer|selected answer|response|answer given)$/.test(text)) return 'original';
   if (/^(feedback|answer explanation|explanation)\s*:/.test(text) || /^(feedback|answer explanation|explanation)$/.test(text)) return 'feedback';
   if (/^(correct|incorrect) answer feedback\s*:/.test(text) || /^(correct|incorrect) answer feedback$/.test(text)) return 'feedback-label';
-  if (/^(not selected|correct|incorrect)$/.test(text)) return 'status';
+  if (/^(not selected|correct|incorrect|your answers:?)$/.test(text)) return 'status';
   return '';
 };
 const markerPayload = value => normalized(value).match(/^[^:：]+[:：]\s*(.+)$/)?.[1] || '';
-const isSummary = value => /^(quiz review|review)$/i.test(normalized(value))
+const isSummary = value => /^(quiz review(?:\.\s*You scored\s+\d+\s+percent,\s*\d+\s+out of\s+\d+\s+points?)?|review|practice topics|your answers:?)$/i.test(normalized(value))
   || /^you scored\s+\d+(?:\.\d+)?\s*(?:percent|%)(?:\s*,?\s*\d+\s+out of\s+\d+\s+points?)?\.?$/i.test(normalized(value))
   || /^(?:\d+\s+)?out of\s+\d+\s+points?\.?$/i.test(normalized(value))
   || /^(average|avg\.?)\s*time per question(?:\s*:?\s*(?:\d+\s*(?:seconds?|secs?)|\d{1,2}:\d{2}))?$/i.test(normalized(value));
@@ -65,14 +65,17 @@ function parseQuestion(blocks, topic, module, vignetteSeed) {
   const paragraphs = content.map((block, index) => ({ block, index, text: block.type === 'p' ? normalized(block.text) : '', marker: block.type === 'p' ? markerType(block.text) : '' }));
   const boundary = paragraphs.find(item => ['correct', 'original', 'feedback', 'feedback-label', 'status'].includes(item.marker))?.index ?? content.length;
   const feedbackBoundary = paragraphs.find(item => ['feedback', 'feedback-label'].includes(item.marker))?.index ?? content.length;
-  const optionCandidates = paragraphs.filter(item => item.index < feedbackBoundary && optionMatch(item.text));
+  let optionCandidates = paragraphs.filter(item => item.index < feedbackBoundary && optionMatch(item.text));
+  const inlineOptionFeedback = paragraphs.filter(item => item.marker === 'feedback-label');
+  const unlabelled = !optionCandidates.length && inlineOptionFeedback.length >= 2;
+  if (unlabelled) optionCandidates = inlineOptionFeedback.map(item => paragraphs[item.index - 1]).filter(item => item?.text && !item.marker);
   const firstOption = Math.min(optionCandidates[0]?.index ?? boundary, boundary);
   const stemBlocks = content.slice(0, firstOption).filter(block => block.type !== 'p' || !isSummary(block.text));
   const options = [];
   const seen = new Map();
   const warnings = [], optionConflicts = [];
-  for (const item of optionCandidates) {
-    const [, key, optionText] = optionMatch(item.text);
+  for (const [position, item] of optionCandidates.entries()) {
+    const key = unlabelled ? String.fromCharCode(65 + position) : optionMatch(item.text)[1];
     if (!seen.has(key)) {
       const option = { key, text: item.text, blocks: [item.block] };
       seen.set(key, option); options.push(option);
@@ -105,12 +108,16 @@ function parseQuestion(blocks, topic, module, vignetteSeed) {
   let explanationBlocks = feedbackAt < 0 ? [] : content.slice(feedbackAt + 1).filter(block => block.type !== 'p' || !markerType(block.text));
   const inlineFeedback = feedbackAt >= 0 && markerPayload(paragraphs[feedbackAt].text);
   if (inlineFeedback) explanationBlocks = [{ type: 'p', text: inlineFeedback, images: [] }, ...explanationBlocks];
-  if (!explanationBlocks.length) explanationBlocks = paragraphs.filter(item => item.marker === 'feedback-label').flatMap(item => {
+  if (!explanationBlocks.length) explanationBlocks = inlineOptionFeedback.flatMap((item, index) => {
+    let end = optionCandidates[index + 1]?.index ?? content.length;
+    while (end > item.index + 1 && paragraphs[end - 1]?.marker) end--;
     const payload = markerPayload(item.text);
-    return payload ? [{ type: 'p', text: payload, images: [] }] : [];
+    return [...(payload ? [{ type: 'p', text: payload, images: [] }] : []), ...content.slice(item.index + 1, end).filter(b => b.type !== 'p' || !markerType(b.text))];
   });
   options.sort((a, b) => a.key.localeCompare(b.key));
   const correctKey = answerKey(correctRaw, options);
+  const score = header.match(/Multiple\s*Choice\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*points?/i);
+  if (!originalAnswerRaw && correctKey && score && +score[2] > 0 && +score[1] === +score[2]) originalAnswerRaw = correctRaw;
   const originalAnswerKey = answerKey(originalAnswerRaw, options);
   if (options.length < 2) warnings.push('無法可靠辨識至少兩個選項');
   if (!correctKey) warnings.push('缺少或無法可靠配對正確答案');
